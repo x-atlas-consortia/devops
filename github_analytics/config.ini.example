@@ -1,0 +1,11 @@
+[GitHub]
+GITHUB_REPOS = owner1/repo1, owner2/repo2  # comma separated items, space is stripped
+GITHUB_TOKEN = ghp_xxxxxxxxx  # use classic personal access token
+
+[AWS]
+AWS_S3_BUCKET = example-bucket
+AWS_ACCESS_KEY = aws-access-key
+AWS_SECRET_KEY = aws-secret-key
+
+[ElasticSearch]
+ES_BASE_URL = https://example.com/es
