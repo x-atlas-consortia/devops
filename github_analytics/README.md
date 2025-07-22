@@ -18,7 +18,7 @@ The `index_to_es.py` script reads JSON files from an AWS S3 bucket and indexes t
 
 Both scripts require a `config.ini` file to run. An example configuration can be found in `config.ini.example`.
 
-The `upload_to_s3.py` script requires a [GitHub <u>Classic</u> Personal Access Token](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api?apiVersion=2022-11-28#authenticating-with-a-personal-access-token) with `repo:public_repo` scope access in order to authenticate. Note that the GitHub recommended fine-grained tokens might cause permission issues. The script also requires an AWS Access Key ID and Secret Access Key. These values can be passed via command line arguments or by creating a `~/.aws/credentials` file. Note that this file is created when configuring the AWS CLI. See the [boto3 documentation](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/quickstart.html#configuration) for more details.
+The `upload_to_s3.py` script requires a [GitHub <u>Classic</u> Personal Access Token](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api?apiVersion=2022-11-28#authenticating-with-a-personal-access-token) with `repo:public_repo` scope access in order to authenticate. Note that the GitHub recommended fine-grained tokens might cause permission issues. The script also requires an AWS Access Key ID and Secret Access Key. See the [boto3 documentation](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/quickstart.html#configuration) for more details.
 
 To setup the script, create and activate a Python 3 virtual environment. Install the dependencies using the `requirements.txt` file.
 
