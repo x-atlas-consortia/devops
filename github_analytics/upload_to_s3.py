@@ -52,7 +52,7 @@ start_date = end_date - timedelta(days=13)
 end_date_str = end_date.strftime("%Y-%m-%d")
 start_date_str = start_date.strftime("%Y-%m-%d")
 
-for repo in GITHUB_REPOS.split(","):
+for repo in GITHUB_REPOS:
     try:
         # get clone data from GitHub API
         url = f"https://api.github.com/repos/{repo}/traffic/clones?per=day"
