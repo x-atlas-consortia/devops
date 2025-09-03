@@ -10,9 +10,21 @@ The `upload_to_s3.py` script uploads GitHub clone and view analytics to an AWS S
 - [Referrers](https://docs.github.com/en/rest/metrics/traffic?apiVersion=2022-11-28#get-top-referral-sources)
 - [Views](https://docs.github.com/en/rest/metrics/traffic?apiVersion=2022-11-28#get-page-views)
 
+### Input Arguments
+
+| Argument    | Type   | Default      | Description                                    |
+|-------------|--------|--------------|------------------------------------------------|
+| --config    | string | config.ini   | Path to the configuration file (ini format)    |
+
 ## Index Analytics to Elastic Search
 
 The `index_to_es.py` script reads JSON files from an AWS S3 bucket and indexes the contents in Elasticsearch/OpenSearch.
+
+### Input Arguments
+
+| Argument    | Type   | Default      | Description                                    |
+|-------------|--------|--------------|------------------------------------------------|
+| --config    | string | config.ini   | Path to the configuration file (ini format)    |
 
 ## Setup
 

@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 import time
+from argparse import ArgumentParser
 from configparser import ConfigParser
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -23,8 +24,16 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 try:
+    parser = ArgumentParser(description="Upload GitHub repository analytics to AWS S3")
+    parser.add_argument(
+        "--config",
+        default="config.ini",
+        help="Path to the configuration file (ini format)",
+    )
+    args = parser.parse_args()
+
     config = ConfigParser()
-    config.read("./config.ini")
+    config.read(args.config)
 
     GITHUB_REPOS = [r.strip() for r in config.get("GitHub", "GITHUB_REPOS").split(",")]
     GITHUB_TOKEN = config.get("GitHub", "GITHUB_TOKEN")

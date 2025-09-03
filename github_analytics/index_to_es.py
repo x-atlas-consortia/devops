@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 import time
+from argparse import ArgumentParser
 from configparser import ConfigParser
 from tempfile import NamedTemporaryFile
 from urllib.request import HTTPError, Request, urlopen
@@ -22,8 +23,16 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 try:
+    parser = ArgumentParser(description="Upload GitHub repository analytics to AWS S3")
+    parser.add_argument(
+        "--config",
+        default="config.ini",
+        help="Path to the configuration file (ini format)",
+    )
+    args = parser.parse_args()
+
     config = ConfigParser()
-    config.read("./config.ini")
+    config.read(args.config)
 
     ES_BASE_URL = config.get("ElasticSearch", "ES_BASE_URL")
 
