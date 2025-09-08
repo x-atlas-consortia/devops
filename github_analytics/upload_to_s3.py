@@ -4,11 +4,36 @@ import sys
 import time
 from argparse import ArgumentParser
 from configparser import ConfigParser
-from datetime import datetime, timedelta, timezone
+from dataclasses import asdict, dataclass
 from io import BytesIO
-from urllib.request import HTTPError, Request, urlopen
+from typing import Literal
 
 import boto3
+import botocore
+from requests import Session
+from requests.adapters import HTTPAdapter
+from requests.exceptions import HTTPError
+from urllib3.util.retry import Retry
+
+
+@dataclass
+class LogItem:
+    repository: str
+    type: Literal["clone", "view"]
+    timestamp: str  # ISO 8601 format
+    count: int
+    uniques: int
+
+    def __eq__(self, other):
+        return (
+            self.repository == other.repository
+            and self.type == other.type
+            and self.timestamp == other.timestamp
+        )
+
+    def __hash__(self):
+        return hash((self.repository, self.type, self.timestamp))
+
 
 # configure logging
 current_time = time.strftime("%Y%m%d-%H%M%S")
@@ -38,16 +63,52 @@ try:
     GITHUB_REPOS = [r.strip() for r in config.get("GitHub", "GITHUB_REPOS").split(",")]
     GITHUB_TOKEN = config.get("GitHub", "GITHUB_TOKEN")
 
-    AWS_S3_BUCKET = config.get("AWS", "AWS_S3_BUCKET")
-    AWS_ACCESS_KEY = config.get("AWS", "AWS_ACCESS_KEY")
-    AWS_SECRET_KEY = config.get("AWS", "AWS_SECRET_KEY")
+    AWS_BUCKET = config.get("AWS", "AWS_BUCKET")
+    AWS_ACCESS_KEY_ID = config.get("AWS", "AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = config.get("AWS", "AWS_SECRET_ACCESS_KEY")
+
+    SLACK_WEBHOOK_URL = config.get("Slack", "SLACK_WEBHOOK_URL", fallback=None)
 except Exception:
     logger.exception("Error reading configuration from 'config.ini'")
     sys.exit(3)
 
 
-s3 = boto3.resource("s3", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY)
-s3_bucket = s3.Bucket(AWS_S3_BUCKET)
+class AWSS3Manager:
+    def __init__(self, bucket_name: str, access_key: str, secret_key: str):
+        s3 = boto3.resource(
+            "s3",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+        )
+        self._bucket = s3.Bucket(bucket_name)
+
+    def get_logs(self, month: str) -> set[LogItem]:
+        filename = f"github_analytics_{month}.json"
+        try:
+            obj = self._bucket.Object(filename)
+            response = obj.get()
+            data = json.loads(response["Body"].read())
+            return set(LogItem(**item) for item in data)
+        except botocore.exceptions.ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "NoSuchKey":
+                return set()
+            else:
+                raise e
+        except Exception as e:
+            logger.error(f"Could not retrieve {filename} from S3: {e}")
+            raise e
+
+    def upload_logs(self, month: str, log_set: set[LogItem]):
+        filename = f"github_analytics_{month}.json"
+        data = sorted(
+            [asdict(log) for log in log_set],
+            key=lambda x: (x["timestamp"], x["repository"], x["type"]),
+        )
+        json_bytes = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        byteio = BytesIO(json_bytes)
+        self._bucket.upload_fileobj(byteio, filename)
+
 
 headers = {
     "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -55,59 +116,99 @@ headers = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-end_date = today - timedelta(days=1)
-start_date = end_date - timedelta(days=13)
-end_date_str = end_date.strftime("%Y-%m-%d")
-start_date_str = start_date.strftime("%Y-%m-%d")
 
-for repo in GITHUB_REPOS:
-    try:
-        # get clone data from GitHub API
-        url = f"https://api.github.com/repos/{repo}/traffic/clones?per=day"
-        req = Request(url, method="GET", headers=headers)
-        with urlopen(req) as res:
-            b_data = res.read()
-        clone_data = json.loads(b_data)
+def get_repo_common_name(repo: str) -> str:
+    return repo.split("/")[1] if "/" in repo else repo
 
-        # don't include today's date since it may be incomplete
-        clone_data["clones"] = [
-            d
-            for d in clone_data["clones"]
-            if datetime.strptime(d["timestamp"], "%Y-%m-%dT%H:%M:%SZ") < today
-        ]
 
-        # get views data from GitHub API
-        url = f"https://api.github.com/repos/{repo}/traffic/views?per=day"
-        req = Request(url, method="GET", headers=headers)
-        with urlopen(req) as res:
-            b_data = res.read()
-        view_data = json.loads(b_data)
+def get_github_data(
+    repo: str,
+    data_type: Literal["clone", "view"],
+    session: Session,
+) -> list[LogItem]:
+    name = f"{data_type}s"
+    url = f"https://api.github.com/repos/{repo}/traffic/{name}?per=day"
+    res = session.get(url, headers=headers, timeout=30)
+    if res.status_code != 200:
+        raise Exception(f"GitHub API request failed with status {res.status_code}: {res.text}")
+    data = res.json()
+    repo_name = get_repo_common_name(repo)
+    return [LogItem(repository=repo_name, type=data_type, **item) for item in data.get(name, [])]
 
-        # don't include today's date since it may be incomplete
-        view_data["views"] = [
-            d
-            for d in view_data["views"]
-            if datetime.strptime(d["timestamp"], "%Y-%m-%dT%H:%M:%SZ") < today
-        ]
 
-        # get referrer data from GitHub API
-        url = f"https://api.github.com/repos/{repo}/traffic/popular/referrers?per=day"
-        req = Request(url, method="GET", headers=headers)
-        with urlopen(req) as res:
-            b_data = res.read()
-        referrer_data = json.loads(b_data)
+def convert_time_to_month(timestamp: str) -> str:
+    # "2024-01-17T00:00:00Z" -> "2024-01"
+    parts = timestamp.split("-")
+    return "-".join(parts[:2])
 
-        # combine clone and view data
-        data = {"clones": clone_data, "views": view_data, "referrers": referrer_data}
-        filename = f"{repo.replace('/', '-')}_{start_date_str}_{end_date_str}.json"
-        b_data = json.dumps(data, separators=(",", ":")).encode("utf-8")
 
+def main():
+    session = Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[408, 429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+
+    s3_manager = AWSS3Manager(
+        bucket_name=AWS_BUCKET,
+        access_key=AWS_ACCESS_KEY_ID,
+        secret_key=AWS_SECRET_ACCESS_KEY,
+    )
+
+    has_error = False
+    current_log_map = dict()
+
+    for repo in GITHUB_REPOS:
+        try:
+            # get clone data from GitHub API
+            clone_logs = get_github_data(repo, "clone")
+
+            # get views data from GitHub API
+            view_logs = get_github_data(repo, "view")
+
+            # get the unique months and make sure the current s3 logs are loaded for them
+            months = {convert_time_to_month(log.timestamp) for log in clone_logs + view_logs}
+            for month in months:
+                if month not in current_log_map:
+                    current_log_map[month] = s3_manager.get_logs(month)
+
+            # merge the logs
+            for log in clone_logs + view_logs:
+                month = convert_time_to_month(log.timestamp)
+                if log in current_log_map[month]:
+                    # replace existing log
+                    current_log_map[month].remove(log)
+                current_log_map[month].add(log)
+
+        except HTTPError as e:
+            logger.error(f"Failed to get analytics for {repo}: {e.code} {e.reason}")
+            has_error = True
+        except Exception as e:
+            logger.error(f"Failed to upload analytics for {repo}: {e}")
+            has_error = True
+
+    if has_error is False:
         # upload data to S3
-        byteio = BytesIO(b_data)
-        s3_bucket.upload_fileobj(byteio, filename)
-        logger.info(f"Uploaded analytics for {repo} to {filename}")
-    except HTTPError as e:
-        logger.error(f"Failed to get analytics for {repo}: {e.code} {e.reason}")
-    except Exception as e:
-        logger.error(f"Failed to upload analytics for {repo}: {e}")
+        for month, log_set in current_log_map.items():
+            try:
+                s3_manager.upload_logs(month, log_set)
+            except Exception as e:
+                logger.error(f"Failed to upload logs for {month}: {e}")
+
+    if has_error and SLACK_WEBHOOK_URL:
+        # send Slack notification
+        try:
+            message = {
+                "text": (
+                    "GitHub Analytics: Upload to S3 process completed with errors. "
+                    "Check the logs for details."
+                )
+            }
+            res = session.post(SLACK_WEBHOOK_URL, json=message, timeout=30)
+            if res.status_code != 200:
+                logger.error(f"Failed to send Slack notification: {res.status_code} {res.text}")
+        except Exception as e:
+            logger.error(f"Failed to send Slack notification: {e}")
+
+
+if __name__ == "__main__":
+    main()

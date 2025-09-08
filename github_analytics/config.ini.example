@@ -3,9 +3,13 @@ GITHUB_REPOS = owner1/repo1, owner2/repo2  # comma separated items, space is str
 GITHUB_TOKEN = ghp_xxxxxxxxx  # use classic personal access token
 
 [AWS]
-AWS_S3_BUCKET = example-bucket
-AWS_ACCESS_KEY = aws-access-key
-AWS_SECRET_KEY = aws-secret-key
+AWS_BUCKET = aws-backup-bucket
+AWS_ACCESS_KEY_ID = aws-access-key-id
+AWS_SECRET_ACCESS_KEY = aws-secret-access-key
 
 [ElasticSearch]
-ES_BASE_URL = https://example.com/es
+ELASTIC_SEARCH_URL = http://elastic-search:8080
+ELASTIC_SEARCH_INDEX = github_analytics
+
+[Slack]
+SLACK_WEBHOOK_URL = https://hooks.slack.com/changeme  # optional, if you want to send error messages to Slack
