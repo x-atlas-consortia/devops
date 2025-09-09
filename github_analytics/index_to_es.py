@@ -111,9 +111,13 @@ class AWSS3Manager:
             raise e
 
 
+def generate_doc_id(log: dict) -> str:
+    return f"{log['repository']}/{log['type']}/{log['timestamp']}"
+
+
 def bulk_update_logs(logs: list[dict], session: Session) -> Optional[list[str]]:
     upserts = [
-        f'{{"update":{{"_id":"{doc["dataset_uuid"]}/{doc["rel_path"]}"}}}}\n{{"doc":{json.dumps(doc, separators=(",", ":"))},"doc_as_upsert":true}}'
+        f'{{"update":{{"_id":"{generate_doc_id(doc)}"}}}}\n{{"doc":{json.dumps(doc, separators=(",", ":"))},"doc_as_upsert":true}}'
         for doc in logs
     ]
 
@@ -186,6 +190,9 @@ def main():
     for month in months_to_index:
         try:
             logs = s3_manager.get_logs(month)
+            if not logs:
+                logger.info(f"No logs found for month {month}, skipping.")
+                continue
             bulk_errors = bulk_update_logs(logs=logs, session=session)
             if bulk_errors:
                 has_error = True
