@@ -164,10 +164,10 @@ def main():
     for repo in GITHUB_REPOS:
         try:
             # get clone data from GitHub API
-            clone_logs = get_github_data(repo, "clone")
+            clone_logs = get_github_data(repo, "clone", session)
 
             # get views data from GitHub API
-            view_logs = get_github_data(repo, "view")
+            view_logs = get_github_data(repo, "view", session)
 
             # get the unique months and make sure the current s3 logs are loaded for them
             months = {convert_time_to_month(log.timestamp) for log in clone_logs + view_logs}
