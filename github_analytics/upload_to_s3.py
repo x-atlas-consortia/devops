@@ -147,6 +147,8 @@ def convert_time_to_month(timestamp: str) -> str:
 
 
 def main():
+    start_time = time.time()
+
     session = Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[408, 429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retries)
@@ -181,7 +183,11 @@ def main():
                 if log in current_log_map[month]:
                     # replace existing log
                     current_log_map[month].remove(log)
-                current_log_map[month].add(log)
+                    current_log_map[month].add(log)
+                    logger.info(f"Updated log for {log.repository} {log.type} {log.timestamp}")
+                else:
+                    current_log_map[month].add(log)
+                    logger.info(f"Added log for {log.repository} {log.type} {log.timestamp}")
 
         except HTTPError as e:
             logger.error(f"Failed to get analytics for {repo}: {e.code} {e.reason}")
@@ -212,6 +218,8 @@ def main():
                 logger.error(f"Failed to send Slack notification: {res.status_code} {res.text}")
         except Exception as e:
             logger.error(f"Failed to send Slack notification: {e}")
+
+    logger.info(f"Process completed in {time.time() - start_time:.2f} seconds")
 
 
 if __name__ == "__main__":
