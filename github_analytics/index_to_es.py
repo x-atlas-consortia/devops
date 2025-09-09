@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 import time
 from argparse import ArgumentParser
@@ -15,8 +16,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # configure logging
+if not os.path.exists("logs"):
+    os.makedirs("logs")
 current_time = time.strftime("%Y%m%d-%H%M%S")
-file_handler = logging.FileHandler(filename=f"index_to_es_{current_time}.log")
+log_file = os.path.join("logs", f"index-to-es-{current_time}.log")
+file_handler = logging.FileHandler(filename=log_file)
 stdout_handler = logging.StreamHandler(sys.stdout)
 logging.basicConfig(
     level=logging.INFO,
