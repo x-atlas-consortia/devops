@@ -75,7 +75,7 @@ class AWSS3Manager:
             if not timestamp:
                 return datetime.fromtimestamp(0, UTC)
 
-            return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+            return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         except botocore.exceptions.ClientError as e:
             error_code = e.response.get("Error", {}).get("Code")
             if error_code == "NoSuchKey":
