@@ -4,10 +4,15 @@ import sys
 import time
 from argparse import ArgumentParser
 from configparser import ConfigParser
-from tempfile import NamedTemporaryFile
-from urllib.request import HTTPError, Request, urlopen
+from datetime import UTC, datetime, timedelta
+from io import BytesIO
+from typing import Optional
 
 import boto3
+import botocore
+from requests import Session
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # configure logging
 current_time = time.strftime("%Y%m%d-%H%M%S")
@@ -34,112 +39,181 @@ try:
     config = ConfigParser()
     config.read(args.config)
 
-    ES_BASE_URL = config.get("ElasticSearch", "ES_BASE_URL")
+    AWS_BUCKET = config.get("AWS", "AWS_BUCKET")
+    AWS_ACCESS_KEY_ID = config.get("AWS", "AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = config.get("AWS", "AWS_SECRET_ACCESS_KEY")
 
-    AWS_S3_BUCKET = config.get("AWS", "AWS_S3_BUCKET")
-    AWS_ACCESS_KEY = config.get("AWS", "AWS_ACCESS_KEY")
-    AWS_SECRET_KEY = config.get("AWS", "AWS_SECRET_KEY")
+    ELASTIC_SEARCH_URL = config.get("ElasticSearch", "ELASTIC_SEARCH_URL")
+    ELASTIC_SEARCH_INDEX = config.get("ElasticSearch", "ELASTIC_SEARCH_INDEX")
+
+    SLACK_WEBHOOK_URL = config.get("Slack", "SLACK_WEBHOOK_URL", fallback=None)
 except Exception:
     logger.exception("Error reading configuration from 'config.ini'")
     sys.exit(3)
 
-s3 = boto3.resource("s3", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY)
-s3_bucket = s3.Bucket(AWS_S3_BUCKET)
+
+class AWSS3Manager:
+    def __init__(self, bucket_name: str, access_key: str, secret_key: str):
+        s3 = boto3.resource(
+            "s3",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+        )
+        self._bucket = s3.Bucket(bucket_name)
+
+    def get_last_index_time(self) -> datetime:
+        filename = "last_index_time.json"
+        try:
+            obj = self._bucket.Object(filename)
+            res = obj.get()
+            data = json.loads(res["Body"].read())
+            timestamp = data.get("timestamp")
+            if not timestamp:
+                return datetime.fromtimestamp(0, UTC)
+
+            return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+        except botocore.exceptions.ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "NoSuchKey":
+                return datetime.fromtimestamp(0, UTC)
+            else:
+                raise e
+        except Exception as e:
+            logger.error(f"Could not retrieve {filename} from S3: {e}")
+            raise e
+
+    def save_last_index_time(self, timestamp: datetime):
+        filename = "last_index_time.json"
+        data = {"timestamp": timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")}
+        json_bytes = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        byteio = BytesIO(json_bytes)
+        self._bucket.upload_fileobj(byteio, filename)
+
+    def get_logs(self, month: str) -> list[dict]:
+        filename = f"github_analytics_{month}.json"
+        try:
+            obj = self._bucket.Object(filename)
+            response = obj.get()
+            data = json.loads(response["Body"].read())
+            return data
+        except botocore.exceptions.ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "NoSuchKey":
+                return []
+            else:
+                raise e
+        except Exception as e:
+            logger.error(f"Could not retrieve {filename} from S3: {e}")
+            raise e
 
 
-def does_index_exist(idx_name: str) -> bool:
-    """Check if an index exists in Elasticsearch/OpenSearch.
+def bulk_update_logs(logs: list[dict], session: Session) -> Optional[list[str]]:
+    upserts = [
+        f'{{"update":{{"_id":"{doc["dataset_uuid"]}/{doc["rel_path"]}"}}}}\n{{"doc":{json.dumps(doc, separators=(",", ":"))},"doc_as_upsert":true}}'
+        for doc in logs
+    ]
 
-    Parameters
-    ----------
-    idx_name : str
-        Name of the index.
+    # split upserts into chunks to avoid exceeding the request size limit. 100 is arbitrary
+    error_msgs = []
+    chunk_size = 100
+    chunks = [upserts[i : i + chunk_size] for i in range(0, len(upserts), chunk_size)]
+    for chunk in chunks:
+        body = "\n".join(chunk) + "\n"
+        url = f"{ELASTIC_SEARCH_URL}/{ELASTIC_SEARCH_INDEX}/_bulk"
+        res = session.post(
+            url,
+            headers={"Content-Type": "application/x-ndjson"},
+            data=body,
+            timeout=60,
+        )
+        if res.status_code != 200:
+            raise Exception(
+                f"Error indexing logs in {ELASTIC_SEARCH_INDEX}: {res.status_code}, {res.text}"
+            )
 
-    Returns
-    -------
-    bool
-        True if index exists, False otherwise.
-    """
-    url = f"{ES_BASE_URL}/{idx_name}"
-    req = Request(url, method="GET")
+        res_body = res.json().get("items", [])
+        result_values = [item.get("update") for item in res_body if "update" in item]
+        msgs = [
+            f"{item['_id']}: Update - {item.get('error', {}).get('reason')}"
+            for item in result_values
+            if item["status"] not in [200, 201]
+        ]
+        if msgs:
+            error_msgs.extend(msgs)
+
+    return error_msgs if error_msgs else None
+
+
+def convert_time_to_month(timestamp: datetime) -> str:
+    return timestamp.strftime("%Y-%m")
+
+
+def months_between_datetimes(start: datetime, end: datetime) -> set[str]:
+    months = set()
+    current = start
+    while current <= end:
+        months.add(current.strftime("%Y-%m"))
+        current = current + timedelta(days=1)
+    return months
+
+
+def main():
+    session = Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[408, 429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+
+    s3_manager = AWSS3Manager(
+        bucket_name=AWS_BUCKET,
+        access_key=AWS_ACCESS_KEY_ID,
+        secret_key=AWS_SECRET_ACCESS_KEY,
+    )
+
+    current_time = datetime.now(UTC)
+    has_error = False
+
     try:
-        with urlopen(req) as res:
-            return res.status == 200
-    except HTTPError as e:
-        logger.error(f"Error checking index {idx_name}: {e}")
-        return False
+        last_index_time = s3_manager.get_last_index_time()
+    except Exception as e:
+        logger.error(f"Failed to get last index time: {e}")
+        sys.exit(3)
+
+    months_to_index = months_between_datetimes(last_index_time, current_time)
+    for month in months_to_index:
+        try:
+            logs = s3_manager.get_logs(month)
+            bulk_errors = bulk_update_logs(logs=logs, session=session)
+            if bulk_errors:
+                has_error = True
+                for err in bulk_errors:
+                    logger.error(err)
+            else:
+                logger.info(f"Successfully indexed logs for month {month}")
+        except Exception as e:
+            logger.error(f"Failed to index logs for month {month}: {e}")
+
+    if has_error is False:
+        try:
+            s3_manager.save_last_index_time(current_time)
+        except Exception as e:
+            logger.error(f"Failed to save last index time: {e}")
+            has_error = True
+
+    if has_error and SLACK_WEBHOOK_URL:
+        # send Slack notification
+        try:
+            message = {
+                "text": (
+                    "GitHub Analytics: Index to Elastic Search process completed with errors. "
+                    "Check the logs for details."
+                )
+            }
+            res = session.post(SLACK_WEBHOOK_URL, json=message, timeout=30)
+            if res.status_code != 200:
+                logger.error(f"Failed to send Slack notification: {res.status_code} {res.text}")
+        except Exception as e:
+            logger.error(f"Failed to send Slack notification: {e}")
 
 
-def create_index(idx_name: str) -> bool:
-    """Create an index in Elasticsearch/OpenSearch.
-
-    Parameters
-    ----------
-    idx_name : str
-        Name of the index.
-
-    Returns
-    -------
-    bool
-        True if index is created, False otherwise.
-    """
-    url = f"{ES_BASE_URL}/{idx_name}"
-    req = Request(url, method="PUT")
-    try:
-        with urlopen(req) as res:
-            logger.info(f"{res.status}: {res.read()}")
-            return res.status == 200
-    except HTTPError as e:
-        logger.error(f"Error creating index {idx_name}: {e}")
-        return False
-
-
-def index_data(idx_name: str, doc_id: str, data: dict) -> bool:
-    """Create or update document in Elasticsearch/OpenSearch.
-
-    Parameters
-    ----------
-    idx_name : str
-        Name of the index.
-    doc_id : str
-        ID of the document.
-    data : dict
-        Data to be indexed.
-
-    Returns
-    -------
-    bool
-        True if document is indexed, False otherwise.
-    """
-    url = f"{ES_BASE_URL}/{idx_name}/_doc/{doc_id}"
-    req = Request(url, method="PUT", data=json.dumps(data).encode("utf-8"))
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urlopen(req) as res:
-            logger.info(f"{res.status}: {res.read()}")
-            return res.status == 200 or res.status == 201
-    except HTTPError as e:
-        logger.error(f"Error indexing data for {idx_name} with ID {doc_id}: {e}")
-        return False
-
-
-for file in s3_bucket.objects.all():
-    filename = file.key
-    repo_name, start_date, end_date = filename.removesuffix(".json").split("_")
-
-    idx_name = f"analytics_{repo_name.replace('-', '_')}"
-    doc_id = f"{start_date}_{end_date}"
-    if not does_index_exist(idx_name):
-        res = create_index(idx_name)
-        if not res:
-            logger.error(f"Failed to create index {idx_name} for {repo_name}")
-            continue
-
-    with NamedTemporaryFile(mode="w+b") as tmp:
-        s3_bucket.download_fileobj(filename, tmp)
-        tmp.seek(0)
-
-        json_data = json.load(tmp)
-        res = index_data(idx_name, doc_id, json_data)
-        if not res:
-            logger.error(f"Failed to index {repo_name} for {doc_id}")
+if __name__ == "__main__":
+    main()
