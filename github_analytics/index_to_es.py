@@ -112,7 +112,7 @@ class AWSS3Manager:
 
 
 def generate_doc_id(log: dict) -> str:
-    return f"{log['repository']}/{log['type']}/{log['timestamp']}"
+    return f"{log['owner']}/{log['repository']}/{log['type']}/{log['timestamp']}"
 
 
 def bulk_update_logs(logs: list[dict], session: Session) -> Optional[list[str]]:
