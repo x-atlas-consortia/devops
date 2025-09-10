@@ -19,6 +19,7 @@ from urllib3.util.retry import Retry
 
 @dataclass
 class LogItem:
+    owner: str
     repository: str
     type: Literal["clone", "view"]
     timestamp: str  # ISO 8601 format
@@ -27,13 +28,14 @@ class LogItem:
 
     def __eq__(self, other):
         return (
-            self.repository == other.repository
+            self.owner == other.owner
+            and self.repository == other.repository
             and self.type == other.type
             and self.timestamp == other.timestamp
         )
 
     def __hash__(self):
-        return hash((self.repository, self.type, self.timestamp))
+        return hash((self.owner, self.repository, self.type, self.timestamp))
 
 
 # configure logging
@@ -121,8 +123,8 @@ headers = {
 }
 
 
-def get_repo_common_name(repo: str) -> str:
-    return repo.split("/")[1] if "/" in repo else repo
+def split_repo_name(repo: str) -> tuple[str, str]:
+    return tuple(repo.split("/"))
 
 
 def get_github_data(
@@ -136,8 +138,11 @@ def get_github_data(
     if res.status_code != 200:
         raise Exception(f"GitHub API request failed with status {res.status_code}: {res.text}")
     data = res.json()
-    repo_name = get_repo_common_name(repo)
-    return [LogItem(repository=repo_name, type=data_type, **item) for item in data.get(name, [])]
+    owner, repo_name = split_repo_name(repo)
+    return [
+        LogItem(owner=owner, repository=repo_name, type=data_type, **item)
+        for item in data.get(name, [])
+    ]
 
 
 def convert_time_to_month(timestamp: str) -> str:
