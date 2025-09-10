@@ -189,10 +189,14 @@ def main():
                     # replace existing log
                     current_log_map[month].remove(log)
                     current_log_map[month].add(log)
-                    logger.info(f"Updated log for {log.repository} {log.type} {log.timestamp}")
+                    logger.info(
+                        f"Updated log for {log.owner}/{log.repository} {log.type} {log.timestamp}"
+                    )
                 else:
                     current_log_map[month].add(log)
-                    logger.info(f"Added log for {log.repository} {log.type} {log.timestamp}")
+                    logger.info(
+                        f"Added log for {log.owner}/{log.repository} {log.type} {log.timestamp}"
+                    )
 
         except HTTPError as e:
             logger.error(f"Failed to get analytics for {repo}: {e.code} {e.reason}")
