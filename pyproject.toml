@@ -1,0 +1,6 @@
+[tool.black]
+line-length = 100
+extend-exclude = ""
+
+[tool.isort]
+profile = "black"
