@@ -183,6 +183,9 @@ def main():
                 logger.error(f"Failed to get analytics for {repo}: {e.response.status_code} {e.response.reason}")
                 view_logs = []
 
+            if not clone_logs and not view_logs:
+                continue
+
             # get the unique months and make sure the current s3 logs are loaded for them
             months = {convert_time_to_month(log.timestamp) for log in clone_logs + view_logs}
             for month in months:
