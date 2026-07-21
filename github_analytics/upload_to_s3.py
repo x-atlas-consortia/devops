@@ -199,19 +199,19 @@ def main():
                     )
 
         except HTTPError as e:
+            if e.code != 404:
+                has_error = True
             logger.error(f"Failed to get analytics for {repo}: {e.code} {e.reason}")
-            has_error = True
         except Exception as e:
             logger.error(f"Failed to upload analytics for {repo}: {e}")
             has_error = True
 
-    if has_error is False:
-        # upload data to S3
-        for month, log_set in current_log_map.items():
-            try:
-                s3_manager.upload_logs(month, log_set)
-            except Exception as e:
-                logger.error(f"Failed to upload logs for {month}: {e}")
+    # upload data to S3
+    for month, log_set in current_log_map.items():
+        try:
+            s3_manager.upload_logs(month, log_set)
+        except Exception as e:
+            logger.error(f"Failed to upload logs for {month}: {e}")
 
     if has_error and SLACK_WEBHOOK_URL:
         # send Slack notification
