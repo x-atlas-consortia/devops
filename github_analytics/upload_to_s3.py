@@ -135,8 +135,7 @@ def get_github_data(
     name = f"{data_type}s"
     url = f"https://api.github.com/repos/{repo}/traffic/{name}?per=day"
     res = session.get(url, headers=headers, timeout=30)
-    if res.status_code != 200:
-        raise Exception(f"GitHub API request failed with status {res.status_code}: {res.text}")
+    res.raise_for_status()
     data = res.json()
     owner, repo_name = split_repo_name(repo)
     return [
@@ -171,10 +170,18 @@ def main():
     for repo in GITHUB_REPOS:
         try:
             # get clone data from GitHub API
-            clone_logs = get_github_data(repo, "clone", session)
+            try:
+                clone_logs = get_github_data(repo, "clone", session)
+            except HTTPError as e:
+                logger.error(f"Failed to get analytics for {repo}: {e.response.status_code} {e.response.reason}")
+                clone_logs = []
 
             # get views data from GitHub API
-            view_logs = get_github_data(repo, "view", session)
+            try:
+                view_logs = get_github_data(repo, "view", session)
+            except HTTPError as e:
+                logger.error(f"Failed to get analytics for {repo}: {e.response.status_code} {e.response.reason}")
+                view_logs = []
 
             # get the unique months and make sure the current s3 logs are loaded for them
             months = {convert_time_to_month(log.timestamp) for log in clone_logs + view_logs}
@@ -198,10 +205,6 @@ def main():
                         f"Added log for {log.owner}/{log.repository} {log.type} {log.timestamp}"
                     )
 
-        except HTTPError as e:
-            if e.code != 404:
-                has_error = True
-            logger.error(f"Failed to get analytics for {repo}: {e.code} {e.reason}")
         except Exception as e:
             logger.error(f"Failed to upload analytics for {repo}: {e}")
             has_error = True
@@ -212,6 +215,7 @@ def main():
             s3_manager.upload_logs(month, log_set)
         except Exception as e:
             logger.error(f"Failed to upload logs for {month}: {e}")
+            has_error = True
 
     if has_error and SLACK_WEBHOOK_URL:
         # send Slack notification
